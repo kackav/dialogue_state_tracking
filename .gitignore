@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.DS_Store
+
+outputs/
+runs/
+logs/
+wandb/
+
+*.pt
+*.safetensors
+*.bin
+checkpoint_*/
+latest/
+best/
