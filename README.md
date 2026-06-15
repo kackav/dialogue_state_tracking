@@ -146,5 +146,6 @@ Add `--minimize` for metrics where lower is better.
 
 ## Notes
 
-- The launcher defaults mirror the previous LUMI experiment settings, but all paths are configurable.
-- `models_asr.py` still uses the `WavLMWrapper`, to use a different Speech Encoder a new Wrapper needs to be added.
+- `train_lm` currently references `args.peak_lm_lr` in the training code, but that argument is not defined. Do not enable `--train_lm` until that is fixed.
+- The launcher defaults mirror the previous LUMI experiment settings, but all paths are now configurable.
+- `models_asr.py` still uses the `WavLMWrapper`; Parakeet or other encoders should be added as a separate code change.
