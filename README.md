@@ -1,8 +1,6 @@
-# DST training
-
-This directory contains the DST training and inference code copied from `scripts/dst_allJson/version_for_git` and cleaned for use as a standalone GitHub repository.
-
-The ASR/encoder pretraining phase is intentionally not included here. This package is for DST training/fine-tuning and DST inference using a speech encoder, connector, and causal language model.
+# dialogue_state_tracking
+DST training/fine-tuning and DST inference using a speech encoder, connector, and causal language model.
+The ASR/encoder pretraining phase is intentionally not included here. 
 
 ## Contents
 
@@ -32,7 +30,7 @@ On LUMI, use the project environment that already provides ROCm PyTorch, FlashAt
 Set the Hugging Face cache before running:
 
 ```bash
-export HF_HOME=/scratch/project_465001761/$USER/huggingface
+export HF_HOME=/path/to/huggingface
 ```
 
 The loader first looks for prepared datasets under:
@@ -109,7 +107,7 @@ Most parameters can be overridden as environment variables, for example:
 
 ```bash
 sbatch \
-  --account=project_465001761 \
+  --account=account_name \
   --time=48:00:00 \
   --nodes=2 \
   --ntasks-per-node=8 \
