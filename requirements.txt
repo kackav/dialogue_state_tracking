@@ -44,6 +44,7 @@ datasets=2.19.1=pypi_0
 decorator=5.3.1=pypi_0
 dill=0.3.8=pypi_0
 filelock=3.29.0=pypi_0
+flash-attn=2.7.4.post1=pypi_0
 frozenlist=1.8.0=py312hbdd6827_0
 fsspec=2025.3.0=pypi_0
 gettext=0.25.1=h92eb808_0
