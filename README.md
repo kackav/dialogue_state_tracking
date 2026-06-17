@@ -1,8 +1,7 @@
 # dialogue_state_tracking
 DST training/fine-tuning and DST inference using a speech encoder, connector, and causal language model.
 There is an ASR pretraining phase and then the DST finetuning one.
-These codes were used for the results in the paper: [JOINT SPEECH AND TEXT TRAINING FOR LLM-BASED END-TO-END SPOKEN
-DIALOGUE STATE TRACKING](https://www.arxiv.org/pdf/2511.22503)
+These codes were used for the results in the paper: [Joint Speech And Text Training for LLM-based End-To-End Spoken Dialogue State Tracking](https://www.arxiv.org/pdf/2511.22503)
 
 ## Contents
 The codes for training the model are in src/:
@@ -42,7 +41,8 @@ If `--text_input` is enabled, it also expects:
 
 - `text_train`
 
-The data used for our training are available at: vendrkat/spokenwoz_dst and vendrkat/multiwoz_dst
+The data used for our training are available at: [huggingface.co/datasets/vendrkat/](https://huggingface.co/datasets/vendrkat/)
+
 ## Training
 
 Minimal run:
