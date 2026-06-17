@@ -1,4 +1,8 @@
-# DST training
+# dialogue_state_tracking
+DST training/fine-tuning and DST inference using a speech encoder, connector, and causal language model.
+There is an ASR pretraining phase and then the DST finetuning one.
+These codes were used for the results in the paper: [JOINT SPEECH AND TEXT TRAINING FOR LLM-BASED END-TO-END SPOKEN
+DIALOGUE STATE TRACKING](https://www.arxiv.org/pdf/2511.22503)
 
 ## Contents
 The codes for training the model are in src/:
