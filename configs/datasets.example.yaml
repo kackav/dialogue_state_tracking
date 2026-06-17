@@ -1,0 +1,14 @@
+train:
+  multiwoz:
+    name: path/or/hf_dataset_name
+    split: train
+
+validation:
+  multiwoz:
+    name: path/or/hf_dataset_name
+    split: validation
+
+text_train:
+  multiwoz:
+    name: path/or/hf_dataset_name
+    split: train
