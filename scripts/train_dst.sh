@@ -35,5 +35,5 @@ fi
 export CUDA_VISIBLE_DEVICES="$GPU_IDS"
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 
-TRANSFORMERS_OFFLINE=1 HF_DATASETS_OFFLINE=1 HF_HUB_OFFLINE=1 HF_HOME=/mnt/scratch/tmp/ivendrame/huggingface \
+HF_HOME=/path/to/huggingface \
   torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --nnodes=1 --nproc_per_node=${N_GPUS} "${ROOT_DIR}/src/train_dst.py" "${args[@]}" "$@"

@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import functools
 import time
@@ -20,7 +21,12 @@ import datasets
 import accelerate
 from peft import get_peft_model, LoraConfig, PeftModel
 from transformers import BitsAndBytesConfig
-
+try:
+    import flash_attn
+    print(f'Using flash_attn version {flash_attn.__version__}')
+except ImportError:
+    flash_attn = None
+    
 print("HF datasets cache", os.environ.get('HF_DATASETS_CACHE', ''))
 print("hf home", os.environ.get('HF_HOME', ''))
 hf_dataset_path = os.environ.get('HF_HOME', '')+ '/modules/datasets_modules/datasets'
@@ -227,7 +233,10 @@ def main():
     if args.quantization_level != 'none':
         quantization_kwargs = {'quantization_config': bnb_config}
 
-    lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs, attn_implementation='flash_attention_2')
+    if "flash_attn" in sys.modules:
+        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs, attn_implementation='flash_attention_2')
+    else:
+        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs)
     
     if hasattr(lm, "language_model"):
         lm = lm.language_model

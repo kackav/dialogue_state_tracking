@@ -1,4 +1,5 @@
 import os
+import sys
 import argparse
 import functools
 import time
@@ -21,7 +22,11 @@ import accelerate
 from accelerate.utils import InitProcessGroupKwargs
 from peft import get_peft_model, LoraConfig, PeftModel
 from whisper_normalizer.english import EnglishSpellingNormalizer
-
+try:
+    import flash_attn
+    print(f'Using flash_attn version {flash_attn.__version__}')
+except ImportError:
+    flash_attn = None
 
 #torch.autograd.set_detect_anomaly(True)
 #print environment variables
@@ -229,7 +234,12 @@ def main():
 
     ## MODEL    
     lm_model_name = args.lm_model_name
-    lm = transformers.AutoModelForCausalLM.from_pretrained(args.lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, attn_implementation='flash_attention_2')
+        
+    if "flash_attn" in sys.modules:
+        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, attn_implementation='flash_attention_2')
+    else:
+        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device)
+    
     if args.lora_rank is not None:
         lora_config = LoraConfig(
             task_type='CAUSAL_LM',

@@ -1,0 +1,14 @@
+json_repair==0.16.0
+requests==2.34.2
+librosa==0.11.0
+soundfile==0.14.0
+tokenizers==0.21.4
+datasets==2.19.1
+pyyaml
+tqdm
+tensorboard
+accelerate==1.14.0
+transformers==4.51.3
+peft==0.19.1
+jiwer==4.0.0
+whisper_normalizer==0.1.12
