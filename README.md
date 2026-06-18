@@ -47,7 +47,17 @@ The data used for our training are available at: [huggingface.co/datasets/vendrk
 
 ## Training
 
-Minimal run:
+ASR pretraining:
+
+```bash
+DATASETS_CONFIG=configs/datasets.yaml \
+EXPERIMENT_NAME=asr_gemma_connector \
+LM_MODEL_NAME=google/gemma-3-1b-it \
+ENCODER_MODEL_NAME=microsoft/wavlm-large \
+scripts/train_asr.sh
+```
+
+Minimal DST run:
 
 ```bash
 DATASETS_CONFIG=configs/datasets.yaml \
