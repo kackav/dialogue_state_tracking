@@ -21,7 +21,9 @@ The dataset configuration template is in configs/:
 Create or activate an environment with PyTorch, Hugging Face Transformers, Accelerate, PEFT, Datasets, and the small metric/parsing dependencies:
 
 ```bash
-pip install -r requirements.txt
+conda env create -n name --file requirements.yaml
+
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
 ```
 
 ## Dataset Config
