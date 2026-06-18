@@ -229,7 +229,7 @@ def main():
 
     ## MODEL    
     lm_model_name = args.lm_model_name
-    lm = transformers.AutoModelForCausalLM.from_pretrained(args.lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, ) #attn_implementation='flash_attention_2',
+    lm = transformers.AutoModelForCausalLM.from_pretrained(args.lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, attn_implementation='flash_attention_2')
     if args.lora_rank is not None:
         lora_config = LoraConfig(
             task_type='CAUSAL_LM',

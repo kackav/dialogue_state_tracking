@@ -227,7 +227,7 @@ def main():
     if args.quantization_level != 'none':
         quantization_kwargs = {'quantization_config': bnb_config}
 
-    lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs) #attn_implementation='flash_attention_2',
+    lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs, attn_implementation='flash_attention_2')
     
     if hasattr(lm, "language_model"):
         lm = lm.language_model
