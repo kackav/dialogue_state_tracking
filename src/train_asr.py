@@ -12,7 +12,6 @@ import re
 
 import data
 import models_asr as models
-# from safe_gpu import safe_gpu
 
 import jiwer
 from torch.utils.tensorboard import SummaryWriter
@@ -28,11 +27,9 @@ try:
 except ImportError:
     flash_attn = None
 
-#torch.autograd.set_detect_anomaly(True)
-#print environment variables
 print("HF datasets cache", os.environ.get('HF_DATASETS_CACHE', ''))
 print("hf home", os.environ.get('HF_HOME', ''))
-# hf_dataset_path = os.environ.get('HF_HOME', '')+ '/modules/datasets_modules/datasets'
+
 hf_dataset_path = os.environ.get('DATADIR', '')
 def lr_lambda_linear_with_min_lr(step, args):
     peak_lr = args.peak_lr
@@ -85,17 +82,6 @@ def main():
                         help='number of sentences to train BPE on')
     parser.add_argument('--bpe_vocab_size', type=int, default=4096,
                         help='vocab size of BPE')
-
-    # parser.add_argument('--dataset', type=str, default='Salesforce/wikitext',
-    #                     help='dataset to use')
-    # parser.add_argument('--dataset_name', type=str, default='wikitext-103-v1',
-    #                     help='name of the dataset')
-    # parser.add_argument('--train_split', type=str, default='train',
-    #                     help='split to use for training')
-    # parser.add_argument('--valid_split', type=str, default='validation',
-    #                     help='split to use for validation')
-    # parser.add_argument('--test_split', type=str, default='test',
-    #                     help='split to use for testing')
 
     parser.add_argument('--dataloader_num_workers', type=int, default=4,
                         help='number of workers for dataloader')
@@ -204,22 +190,18 @@ def main():
     parser.add_argument('--mse_loss_logit', action='store_true', help = 'trai with mse loss calculated on logits')
 
     args = parser.parse_args()
-    #torch.set_default_dtype(torch.bfloat16)
+
     torch.set_float32_matmul_precision('high')
 
     def place_holder_fn(x):
         pass
-    
-    # kwargs = InitProcessGroupKwargs(timeout=datetime.timedelta(seconds=7200))
-    # accelerator = accelerate.Accelerator(kwargs_handlers=[kwargs])
+ 
     accelerator = accelerate.Accelerator(kwargs_handlers=[accelerate.DistributedDataParallelKwargs(broadcast_buffers=False)])
 
     _x = torch.tensor([1.0], device=accelerator.device, dtype=torch.bfloat16)
 
-    # device = torch.device('cuda' if torch.cuda.is_available() and not args.no_cuda else 'cpu')
     device = accelerator.device
     print(f'Using device: {device} - index: {accelerator.process_index}')
-    # n_gpus = int(len(os.environ.get('CUDA_VISIBLE_DEVICES'))/2)+1
     n_gpus = accelerator.num_processes
 
     if accelerator.is_main_process:
@@ -278,7 +260,6 @@ def main():
     if args.resume:
         accelerator.print('Resuming from checkpoint')
         connector = models.Connector.load_from_dir(os.path.join(args.output_dir, 'latest'), device)
-        #connector = connector.to(torch.bfloat16)
         connector = connector.to(device)
         if args.text_input:
             text_encoder = models.TextEncoder.load_from_dir(os.path.join(args.output_dir, 'latest'), device)
@@ -291,8 +272,6 @@ def main():
                 encoder = models.WavLMWrapper(args.encoder_model_name)
                 connector = models.Connector(encoder.encoder.config.hidden_size, lm.config.hidden_size, num_heads = 4, ff_size = 4*encoder.encoder.config.hidden_size, num_connector_layers = args.connector_layers)
     
-            # encoder = models.WavLMWrapper.load_from_dir(os.path.join(args.output_dir, 'latest'), device, deactivate_masked_spec_embed = True)
-            # #encoder= encoder.to(torch.bfloat16)
             encoder = encoder.to(device)
             connector = connector.to(device)
 
@@ -329,10 +308,7 @@ def main():
         else:
             encoder = models.WavLMWrapper(args.encoder_model_name)
             connector = models.Connector(encoder.encoder.config.hidden_size, lm.config.hidden_size, num_heads = 4, ff_size = 4*encoder.encoder.config.hidden_size, num_connector_layers = args.connector_layers)
-    
-        # encoder = models.WavLMWrapper(args.encoder_model_name)
-        # connector = models.Connector(encoder.encoder.config.hidden_size, lm.config.hidden_size, num_heads = 4, ff_size = 4*encoder.encoder.config.hidden_size, num_connector_layers = args.connector_layers)
-    
+
         if args.text_input:
             if args.use_llm_emb:
                 text_encoder = models.TextEncoder(args.mask_rate, vocab_size=None, dim_input = args.text_encoder_dim, dim_output = encoder.encoder.config.hidden_size, num_heads=4, ff_size = 4*(args.text_encoder_dim), pad_token=tokenizer.pad_token_id, dim_lm_embeddings=lm.config.hidden_size, num_layers = args.text_encoder_layers)
@@ -360,7 +336,6 @@ def main():
     if args.train_lm:
         parameters_to_train += [{"params": model.lm.parameters(),"lr": args.peak_lm_lr,"weight_decay": args.weight_decay}]
     if args.lora_rank is not None:
-        #parameters_to_train += [p for p in model.lm.parameters() if p.requires_grad]
         parameters_to_train += [{"params": [p for p in model.lm.parameters() if p.requires_grad], "lr": args.peak_lr,"weight_decay": args.weight_decay}]
 
     accelerator.print(model.config)
