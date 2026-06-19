@@ -8,7 +8,7 @@ import os
 import data
 import transformers
 import argparse
-import models
+import models_dst as models
 from peft import get_peft_model, LoraConfig, PeftModel
 from copy import deepcopy
 from datetime import timedelta
@@ -83,7 +83,7 @@ def main():
     tokenizer = transformers.AutoTokenizer.from_pretrained(lm_model_name)
 
     datasets_config = yaml.load(open(args.datasets_config), Loader=yaml.FullLoader)
-    dset_valid = data.load_dial_from_config('validation', datasets_config, hf_dataset_path, tokenizer,
+    dset_valid = data.load_from_config('validation', datasets_config, hf_dataset_path, tokenizer,
                                                 accelerator=accelerator, do_filter=False) # dictonary ["commonvoice": ..., "librispeech": ... etc]
 
     lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, torch_dtype=torch.bfloat16, attn_implementation='flash_attention_2', device_map=accelerator.device)

@@ -2,8 +2,6 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON="${PYTHON:-python}"
-LAUNCHER="${LAUNCHER:-python}"
 
 : "${DATASETS_CONFIG:?Set DATASETS_CONFIG to the datasets YAML path.}"
 : "${PRETRAINED_DIR:?Set PRETRAINED_DIR to the checkpoint directory, for example outputs/run/best.}"
@@ -54,18 +52,7 @@ if [[ -n "${SLOTS_TO_IGNORE:-}" ]]; then
   args+=(--slots_to_ignore "${slots[@]}")
 fi
 
-case "${LAUNCHER}" in
-  python)
-    exec "${PYTHON}" "${ROOT_DIR}/inference_generate.py" "${args[@]}" "$@"
-    ;;
-  srun)
-    exec srun "${PYTHON}" "${ROOT_DIR}/inference_generate.py" "${args[@]}" "$@"
-    ;;
-  accelerate)
-    exec accelerate launch "${ROOT_DIR}/inference_generate.py" "${args[@]}" "$@"
-    ;;
-  *)
-    echo "Unknown LAUNCHER=${LAUNCHER}. Use python, srun, or accelerate." >&2
-    exit 2
-    ;;
+HF_HOME=/path/to/huggingface \
+  torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:0 --nnodes=1 --nproc_per_node=${N_GPUS} "${ROOT_DIR}/src/inference_generate.py" "${args[@]}" "$@"
+
 esac
