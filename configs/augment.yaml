@@ -1,0 +1,8 @@
+paraphrase
+  - probability: 0.5
+augment_numbers
+  - probability: 0.5
+augment_names
+  - probability: 0.5
+augment_times
+  - probability: 0.5

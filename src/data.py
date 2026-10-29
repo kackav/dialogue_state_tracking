@@ -17,6 +17,7 @@ from tokenizers.trainers import BpeTrainer
 from tokenizers.decoders import BPEDecoder
 import datasets
 import yaml
+import copy
 
 def train_bpe(data, vocab_size=1024, special_tokens=None, output_dir='tokenizer', num_sentences=100000):
     if special_tokens is None:
@@ -44,6 +45,110 @@ def load_tokenizer(tokenizer_json):
         tokenizer_str = f.read()
     tokenizer = Tokenizer.from_str(tokenizer_str)
     return tokenizer
+
+def _as_hashable(v):
+    return v if isinstance(v, (str, int, float, bool)) else json.dumps(v, sort_keys=True)
+
+def build_ontology(data, ontology_config=None):
+    """data: a HF dataset or a dict {name: dataset}. Reads only the 'text' column (no audio decoding)."""
+    domains_ontology = set()
+    keys_ontology = {}
+    values_ontology = {}
+    default_cfg = {"sampling": "fixed", "slot_keys": 5, "slot_values": 10, "domains": 0}
+    ontology_config = yaml.load(open(ontology_config, 'r'), Loader=yaml.FullLoader) if ontology_config else default_cfg
+    
+    for ds in (data.values() if isinstance(data, dict) else [data]):
+        for raw in ds['text']:
+            text_input = json.loads(raw)
+            if "domains" in ontology_config and ontology_config["domains"]["n_of_samples"] > 0:
+                domains_ontology.update(ast.literal_eval(text_input["domains"]))
+            else:
+                domains_ontology = None
+            slot_dict = ast.literal_eval(text_input['slots'])
+            for dom, slot_items in slot_dict.items():
+                for slot_key, slot_value in slot_items.items():
+                    if ontology_config["slot_keys"]["n_of_samples"] > 0:
+                        keys_ontology.setdefault(dom, set()).add(slot_key)
+                        # keys_ontology.update(slot_key)
+                    
+                    if ontology_config["slot_values"]["n_of_samples"] > 0:    
+                        values_ontology.setdefault(slot_key, set()).add(_as_hashable(slot_value))
+                    
+    return {'values': values_ontology, 'keys': keys_ontology, 'cfg': ontology_config}
+
+def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontology_config, rng=None):
+    rng = rng if rng is not None else random
+    n_of_values_to_sample = ontology_config['slot_values']['n_of_samples'] # if 'slot_values' in ontology_config else 0
+    n_of_keys_to_sample = ontology_config['slot_keys']['n_of_samples']# if 'slot_keys' in ontology_config else 0
+    n_of_domains_to_sample = ontology_config['domains']['n_of_samples'] #if 'domains' in ontology_config else 0
+    
+    gt_slot_keys = set()
+    gt_domains = set()
+    values_for_context = set()
+    slots_for_context = set()
+    domains_for_context = set() 
+
+    all_possible_vals = val_ontology
+    all_possible_domains = set(list(slot_ontology.keys()))
+    
+    all_possible_slots = [sorted(slot_ontology[dom]) for dom in sorted(all_possible_domains)]
+    all_possible_slots = [x for xs in all_possible_slots for x in xs]
+    all_possible_slots = set(all_possible_slots)
+    for dom, slot_dict in slots.items():
+        
+        for slot_key, slot_value in slot_dict.items():
+            slot_value = _as_hashable(slot_value)
+            gt_val = {}
+            if val_ontology:
+                vals_subset = all_possible_vals[slot_key] #set!
+                vals_subset.discard(slot_value)
+                if ontology_config['slot_values']['ground_truth']==True:
+                    gt_val = {slot_value}
+                    values_for_context.update(gt_val)
+
+                temp_n_of_values_to_sample = n_of_values_to_sample
+                if n_of_values_to_sample < len(gt_val):
+                    temp_n_of_values_to_sample = len(gt_val) + ontology_config['slot_values']['additionals']
+                sampled_vals = set(rng.sample(sorted(vals_subset), min(temp_n_of_values_to_sample-len(gt_val), len(vals_subset))))
+                values_for_context.update(sampled_vals)
+
+            
+            if ontology_config['slot_keys']['ground_truth']==True:
+                gt_slot_keys.update({slot_key})
+            
+        if ontology_config['domains']['ground_truth']==True:
+            gt_domains.update({dom})
+    
+    if slot_ontology:
+        all_possible_domains.discard(gt_domains)
+        temp_n_of_domains_to_sample = n_of_domains_to_sample
+        if n_of_domains_to_sample < len(gt_domains):
+            temp_n_of_domains_to_sample = len(gt_domains) + ontology_config['domains']['additionals']
+        domains_for_context = set(rng.sample(sorted(all_possible_domains), min(temp_n_of_domains_to_sample-len(gt_domains), len(all_possible_domains))))
+        if ontology_config['domains']['ground_truth']==True:
+            domains_for_context.update(gt_domains)
+        slots_subset = copy.deepcopy(all_possible_slots)
+        [slots_subset.discard(gt) for gt in gt_slot_keys]
+        temp_n_of_keys_to_sample = n_of_keys_to_sample
+        if n_of_keys_to_sample < len(gt_slot_keys):
+            temp_n_of_keys_to_sample = len(gt_slot_keys) + ontology_config['slot_keys']['additionals']
+        slots_for_context = set(rng.sample(sorted(slots_subset), min(temp_n_of_keys_to_sample-len(gt_slot_keys), len(slots_subset))))
+        # print(len(slots_subset), len(gt_slot_keys), gt_slot_keys, slot_dict, gt_domains, sampled_vals)      
+        # try:
+        #     slots_for_context = set(rng.sample(sorted(slots_subset), min(n_of_keys_to_sample-len(gt_slot_keys), len(slots_subset))))
+        # except ValueError:
+        #     print(len(slots_subset), len(gt_slot_keys), gt_slot_keys, slots_subset)
+        if ontology_config['slot_keys']['ground_truth']==True:
+            slots_for_context.update(gt_slot_keys)
+    else:
+        slots_for_context = set()
+        domains_for_context = set()
+
+    values_for_context = sorted(values_for_context)
+    slots_for_context = sorted(slots_for_context)
+    domains_for_context = sorted(domains_for_context)
+
+    return f"{domains_for_context if len(domains_for_context)>0 else ''}, f{slots_for_context if len(slots_for_context)>0 else ''}, {values_for_context if len(values_for_context)>0 else ''}, {context}"
 
 class TextDataset(torch.utils.data.Dataset):
     def __init__(self, data, tokenizer, bos_token):
@@ -122,93 +227,12 @@ class AudioDatasetHF(torch.utils.data.Dataset):
                 "labels" : encoded_lab + [self.tokenizer.eos_token_id],
                 "labels_len" : len(encoded_lab) + 1
                 }
-        
-
-class AudioDataset(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, audio_dir, bos_token, fs = 16_000):
-        self.data = data
-        self.tokenizer = tokenizer
-        self.audio_dir = audio_dir
-        self.sample_rate = fs
-        self.bos_token = bos_token
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        text = self.data[idx]['text'][0]
-        audio_path = self.data[idx]['text'][1]
-        audio, fs = torchaudio.load(audio_path)
-        if fs != self.sample_rate:
-            audio = torchaudio.transforms.Resample(orig_freq=fs, new_freq=16000)(audio)
-        inp = text
-        label = text
-        
-        return {"audio" : audio,
-                "audio_len" : audio.shape[1],
-                "text_trans" : text,
-                "input_ids" : [self.bos_token] + self.tokenizer.encode(inp),
-                "input_len" : len(self.tokenizer.encode(inp)) + 1,
-                "labels" : self.tokenizer.encode(label) + [self.tokenizer.eos_token_id],
-                "labels_len" : len(self.tokenizer.encode(label)) + 1
-                }
-        
-    def __iter__(self):
-        for i in range(len(self.data)):
-            yield self[i]
-
-class TextDatasetHF(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, bos_token):
-        self.data = data
-        self.is_fake = False
-        self.data_lengths = {key: len(v) for key,v in data.items()}
-        self.tokenizer = tokenizer
-        self.bos_token = bos_token
-        self.fake_text_len = 30
-
-    def __len__(self):
-        return sum(list(self.data_lengths.values()))
-
-    def __getitem__(self, idx):
-        if self.is_fake:
-            text = "This is a fake text for resume."
-            inp = [0] * self.fake_text_len
-            label = [0] * self.fake_text_len
-            return {"text_trans": text,
-                "input_ids": inp,
-                "input_len": self.fake_text_len,
-                "labels": label,
-                "labels_len" : self.fake_text_len
-                }
-        
-        total_length = 0
-        for key, length in self.data_lengths.items():
-            previous_length = total_length
-            total_length += length
-            if idx < total_length:
-                idx -= previous_length
-                break
-
-        data_key = self.data[key][idx]
-        text = data_key['text'].lower()
-        if len(text) > 180:
-            text = text[:180]
-        inp = text
-        label = text
-        inp_encoded = self.tokenizer.encode(inp, add_special_tokens = False)
-        lab_encoded = self.tokenizer.encode(label, add_special_tokens = False)
-        
-        return {"text_trans" : text,
-                "input_ids" : [self.bos_token] + inp_encoded,
-                "input_len" : len(inp_encoded) + 1,
-                "labels" : lab_encoded + [self.tokenizer.eos_token_id],
-                "labels_len" : len(lab_encoded) + 1
-                }
 
 class DialogDatasetHF(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, bos_token):
+    def __init__(self, data, tokenizer, bos_token, ontology=None):
         self.data = data
         self.min_audio_len = 8500
+        self.max_pre_text_length = 500
         self.is_fake = False
         self.fake_audio_len = 30
         self.fake_text_len = 20
@@ -216,6 +240,14 @@ class DialogDatasetHF(torch.utils.data.Dataset):
         self.fake_context_len = 10
         self.data_lengths ={k: len(v) for k,v in data.items()}
         self.tokenizer = tokenizer
+        if ontology:
+            self.use_ontology = True
+            self.val_ontology = ontology['values']
+            self.slot_ontology = ontology['keys']
+            # self.dom_ontology = ontology['domains']
+            self.ontology_cfg = ontology['cfg']
+        else:
+            self.use_ontology=False
 
     def __len__(self):
         return sum(list(self.data_lengths.values()))
@@ -234,12 +266,30 @@ class DialogDatasetHF(torch.utils.data.Dataset):
                 "audio_len" : audio.shape[1],
                 "text_trans" : text,
                 "context_trans" : context,
-                "context" : encoded_context,
-                "context_len" : len(encoded_context),
-                "input_ids" : inp,
-                "input_len" : len(inp),
-                "labels" : label,
-                "labels_len" : len(label),
+                "context" : [self.bos_token] + encoded_context,
+                "context_len" : len(encoded_context) +1,
+                "pre_text_trans" : text,
+                "pre_text" : encoded_context,
+                "pre_text_len" : len(encoded_context),
+                "input_ids" : [self.bos_token] + encoded_context,
+                "input_len" : len(encoded_context) + 1,
+                "labels" : encoded_context + [self.tokenizer.eos_token_id],
+                "labels_len" : len(encoded_context) + 1,
+                "wav_id": text,
+                "turn_index": text,
+                "agent_text": text,
+                "domains": text,
+                "slots": text,
+                # "audio" : audio,
+            #     "audio_len" : audio.shape[1],
+            #     "text_trans" : text,
+            #     "context_trans" : context,
+            #     "context" : encoded_context,
+            #     "context_len" : len(encoded_context),
+            #     "input_ids" : inp,
+            #     "input_len" : len(inp),
+            #     "labels" : label,
+            #     "labels_len" : len(label),
                 }
         
         total_length = 0
@@ -271,7 +321,10 @@ class DialogDatasetHF(torch.utils.data.Dataset):
         
         slots = ast.literal_eval(slots)
         domains = ast.literal_eval(domains)
-        text = {"label": pre_text,
+        if self.use_ontology:
+            rng = random.Random(f"{key}-{idx}") if self.ontology_cfg['sampling'] == 'fixed' else None
+            context = get_context_with_ontology(context, slots, self.val_ontology, self.slot_ontology, self.ontology_cfg, rng=rng)
+            text = {"label": pre_text,
                 "domains": domains,
                 "slots": slots,
                 }
@@ -285,6 +338,10 @@ class DialogDatasetHF(torch.utils.data.Dataset):
         encoded_lab = self.tokenizer.encode(label, add_special_tokens = False)
         encoded_context = self.tokenizer.encode(context, add_special_tokens = False)
         encoded_pre_text = self.tokenizer.encode(pre_text, add_special_tokens = False)
+        if len(encoded_pre_text) > self.max_pre_text_length:
+            encoded_pre_text = encoded_pre_text[:self.max_pre_text_length]
+        if len(encoded_pre_text) == 0:
+            encoded_pre_text = [self.bos_token]
 
         return {"audio" : audio,
                 "audio_len" : audio.shape[1],
@@ -347,15 +404,21 @@ class InferenceDialogDatasetHF(torch.utils.data.Dataset):
 
 
 class TextDialogDatasetHF(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, bos_token):
+    def __init__(self, data, tokenizer, bos_token, ontology=None):
         self.data = data
         self.is_fake = False
         self.data_lengths = {key: len(v) for key,v in data.items()}
         self.tokenizer = tokenizer
         self.bos_token = bos_token
         self.fake_text_len = 30
-        self.max_context_turns = 100
-
+        self.max_context_turns = 200
+        if ontology:
+            self.use_ontology = True
+            self.val_ontology = ontology['values']
+            self.slot_ontology = ontology['keys']
+            # self.dom_ontology = ontology['domains']
+        else:
+            self.use_ontology=False
     def __len__(self):
         return sum(list(self.data_lengths.values()))
 
@@ -368,7 +431,14 @@ class TextDialogDatasetHF(torch.utils.data.Dataset):
                 "input_ids": inp,
                 "input_len": self.fake_text_len,
                 "labels": label,
-                "labels_len" : self.fake_text_len
+                "labels_len" : self.fake_text_len,
+                "pre_text_trans" : text,
+                "pre_text" : inp,
+                "pre_text_len" : len(inp),
+                "context_trans" : text,
+                "context" : inp,
+                "context_len" : len(inp) +1,
+                "text_trans" : text,
                 }
 
         total_length = 0
@@ -397,22 +467,36 @@ class TextDialogDatasetHF(torch.utils.data.Dataset):
         
         inp = text
         label = text
-        inp_encoded = self.tokenizer.encode(inp, add_special_tokens = False)
-        inp_encoded = [self.bos_token] + inp_encoded
-        if len(inp_encoded) > 512:
-            inp_encoded = inp_encoded[:512]
-        lab_encoded = self.tokenizer.encode(label, add_special_tokens = False)
-        lab_encoded = lab_encoded + [self.tokenizer.eos_token_id]
-        if len(lab_encoded) > 512:
-            lab_encoded = lab_encoded[:512]
+        encoded_inp = self.tokenizer.encode(inp, add_special_tokens = False)
+        encoded_inp = [self.bos_token] + encoded_inp
+        if len(encoded_inp) > 512:
+            encoded_inp = encoded_inp[:512]
+        encoded_lab = self.tokenizer.encode(label, add_special_tokens = False)
+        encoded_lab = encoded_lab + [self.tokenizer.eos_token_id]
+        if len(encoded_lab) > 512:
+            encoded_lab = encoded_lab[:512]
             
         context = data_key['context']
         context = "\n".join(context.split("\n")[-self.max_context_turns:])
+        if self.use_ontology:
+            context = get_context_with_ontology(context, slots, domains, self.val_ontology, self.slot_ontology)
+                
         encoded_context = self.tokenizer.encode(context, add_special_tokens = False)
         encoded_pre_text = self.tokenizer.encode(pre_text, add_special_tokens = False)
+    
+        if len(encoded_inp) > 512:
+            encoded_inp = encoded_inp[:512]
+        if len(encoded_lab) > 512:
+            encoded_lab = encoded_lab[:512]
+        encoded_pre_text = self.tokenizer.encode(pre_text, add_special_tokens = False)
         if len(encoded_pre_text) > 512:
-            encoded_pre_text[:512]
+            encoded_pre_text = encoded_pre_text[:512]
 
+        # if self.printing:
+        #     print("TEXT TRANS", text_str_normalized)
+        #     print("CONTEXT_TRANS", context)
+        self.printing = False
+        
         return {
                 "context_trans" : context,
                 "context" : [self.bos_token] + encoded_context,
@@ -420,12 +504,39 @@ class TextDialogDatasetHF(torch.utils.data.Dataset):
                 "pre_text_trans" : pre_text,
                 "pre_text" : encoded_pre_text,
                 "pre_text_len" : len(encoded_pre_text),
-                "text_trans" : text,
-                "input_ids" : inp_encoded,
-                "input_len" : len(inp_encoded),
-                "labels" : lab_encoded,
-                "labels_len" : len(lab_encoded),
+                "text_trans" : str(text['label']),
+                "input_ids" : encoded_inp,
+                "input_len" : len(encoded_inp),
+                "labels" : encoded_lab,
+                "labels_len" : len(encoded_lab),
                 }
+
+def filter_long_context(example, tokenizer, max_text_len=800):
+    encoded = tokenizer.encode(example["context"], add_special_tokens = False)
+    return len(encoded) < max_text_len
+
+def filter_short_text(example, tokenizer, min_text_len=10):
+    try:
+        raw = example.get("text") if isinstance(example, dict) else example
+        if raw is None:
+            return False
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode('utf-8', errors='ignore')
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                label = parsed.get("label", "")
+            except Exception:
+                label = raw
+        elif isinstance(raw, dict):
+            label = raw.get("label", "")
+        else:
+            label = str(raw)
+
+        encoded = tokenizer.encode(label, add_special_tokens = False)
+        return len(encoded) > min_text_len
+    except Exception:
+        return False
 
 def filter_long_text(example, tokenizer, max_text_len=200):
     try:
@@ -452,51 +563,21 @@ def filter_long_text(example, tokenizer, max_text_len=200):
     except Exception:
         return False
 
-def filter_short_text(example, tokenizer, min_text_len=10):
-    try:
-        raw = example.get("text") if isinstance(example, dict) else example
-        if raw is None:
-            return False
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode('utf-8', errors='ignore')
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-                label = parsed.get("label", "")
-            except Exception:
-                label = raw
-        elif isinstance(raw, dict):
-            label = raw.get("label", "")
-        else:
-            label = str(raw)
-
-        encoded = tokenizer.encode(label, add_special_tokens = False)
-        return len(encoded) > min_text_len
-    except Exception:
-        return False
-
-def _apply_common_filters(ds, tokenizer=None, max_audio_len=30, min_audio_len=0.6, max_text_len=200, min_text_len=10, do_filter=False):
+def _apply_common_filters(ds, tokenizer=None, do_filter=True):
+    """Same filters as the old load_dial_from_config."""
     if not do_filter:
         return ds
-    # audio length filter when audio field present
-    try:
-        if 'audio' in ds.features:
-            ds = ds.filter(lambda item: len(item['audio']["array"]) < (max_audio_len * 16_000), num_proc=4)
-            ds = ds.filter(lambda item: len(item['audio']["array"]) > (min_audio_len * 16_000), num_proc=4)
-    except Exception:
-        pass
-    # text length filters when tokenizer provided and `text` field follows expected structure
-    if tokenizer is not None:
-        # ensure tokenizer is picklable for multiprocessing; if not, fall back to single-process filtering
-        num_proc = 4
-        try:
-            pickle.dumps(tokenizer)
-        except Exception:
-            num_proc = 1
-            print("Warning: tokenizer object is not picklable — falling back to num_proc=1 for text filters.")
-        ds = ds.filter(functools.partial(filter_long_text, tokenizer=tokenizer, max_text_len=max_text_len), num_proc=num_proc)
-        ds = ds.filter(functools.partial(filter_short_text, tokenizer=tokenizer, min_text_len=min_text_len), num_proc=num_proc)
+    if 'audio_len' in ds.features:
+        ds = ds.filter(lambda item: item['audio_len'] < (30*16_000), num_proc=4)
+        ds = ds.filter(lambda item: item['audio_len'] > (0.6*16_000), num_proc=4)
+    elif 'audio' in ds.features:
+        ds = ds.filter(lambda item: len(item['audio']["array"]) < (30*16_000), num_proc=4)
+        ds = ds.filter(lambda item: len(item['audio']["array"]) > (0.6*16_000), num_proc=4)
+    ds = ds.filter(functools.partial(filter_long_text, tokenizer=tokenizer, max_text_len=200), num_proc=4)
+    ds = ds.filter(functools.partial(filter_long_context, tokenizer=tokenizer, max_text_len=800), num_proc=4)
+    ds = ds.filter(functools.partial(filter_short_text, tokenizer=tokenizer), num_proc=4)
     return ds
+
 
 
 def load_from_config(ds_type, config_datasets, hf_dataset_path=None, tokenizer=None, accelerator=None, do_filter=False):
@@ -760,7 +841,7 @@ class CollateFnDialogText:
         pre_text = torch.nn.utils.rnn.pad_sequence(pre_text, batch_first=True, padding_value=self.tokenizer.pad_token_id if self.tokenizer is not None else 0)
         context_len = torch.tensor([_['context_len'] for _ in batch], dtype=torch.int)
         pre_text_len = torch.tensor([_['pre_text_len'] for _ in batch], dtype=torch.int)
-
+        context_trans = [_['context_trans'] for _ in batch]
 
         return {"text_trans" : text_trans,
                 "input_ids": input_ids,
@@ -768,6 +849,7 @@ class CollateFnDialogText:
                 "labels": labels,
                 "labels_len": labels_len,
                 "context": context,
+                "context_trans": context_trans,
                 "context_len": context_len,
                 "pre_text": pre_text,
                 "pre_text_len": pre_text_len,
@@ -807,9 +889,11 @@ def collate_all_dialog_text(batch_s, batch_t, tokenizer=None):
     pre_text_len = torch.tensor(batch_s['pre_text_len'].tolist() + batch_t['pre_text_len'].tolist())
     context_len = torch.tensor(batch_s['context_len'].tolist() + batch_t['context_len'].tolist())
     text_trans = batch_s['text_trans'] + batch_t['text_trans']
+    context_trans = batch_s['context_trans'] + batch_t['context_trans']
 
 
     return {"text_trans" : text_trans,
+            "context_trans": context_trans,
             "input_ids": input_ids,
             "input_len": input_len,
             "labels": labels,

@@ -1,5 +1,5 @@
 import os
-import sys
+import shutil
 import argparse
 import functools
 import time
@@ -16,9 +16,9 @@ import models_dst as models
 import jiwer
 import compute_metrics
 from torch.utils.tensorboard import SummaryWriter
-import transformers
-import datasets
+
 import accelerate
+import build_model
 from peft import get_peft_model, LoraConfig, PeftModel
 from transformers import BitsAndBytesConfig
 try:
@@ -29,7 +29,9 @@ except ImportError:
     
 print("HF datasets cache", os.environ.get('HF_DATASETS_CACHE', ''))
 print("hf home", os.environ.get('HF_HOME', ''))
-hf_dataset_path = os.environ.get('HF_HOME', '')+ '/modules/datasets_modules/datasets'
+hf_dataset_path = os.environ.get('DATA_DIR', '')
+if not hf_dataset_path:
+    hf_dataset_path = os.environ.get('HF_HOME', '') + '/modules/datasets_modules/datasets'
 
 def lr_lambda_linear_with_min_lr(step, args):
     peak_lr = args.peak_lr
@@ -63,26 +65,18 @@ def lr_lambda(step, args):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--experiment_name', type = str, default='',
-                        help='name of the experiment')
     parser.add_argument('--no_cuda', action='store_true',
                         help='do not use cuda even if it is available')
-    parser.add_argument('--num_heads', type=int, default=16,
-                        help='number of attention heads')
-    parser.add_argument('--ff_size', type=int, default=2048,
-                        help='feed forward size in transformer model')
-    parser.add_argument('--num_layers', type=int, default=10,
-                        help='number of layers in transformer model')
-    parser.add_argument('--max_len', type=int, default=10000,
-                        help='maximum allowed length of input sequence')
-    parser.add_argument('--dropout', type=float, default=0,
-                        help='dropout probability in transformer model')
-
-    parser.add_argument('--bpe_num_sentences', type=int, default=100_000,
-                        help='number of sentences to train BPE on')
-    parser.add_argument('--bpe_vocab_size', type=int, default=4096,
-                        help='vocab size of BPE')
-
+    # parser.add_argument('--num_heads', type=int, default=16,
+    #                     help='number of attention heads')
+    # parser.add_argument('--ff_size', type=int, default=2048,
+    #                     help='feed forward size in transformer model')
+    # parser.add_argument('--num_layers', type=int, default=10,
+    #                     help='number of layers in transformer model')
+    # parser.add_argument('--max_len', type=int, default=10000,
+    #                     help='maximum allowed length of input sequence')
+    # parser.add_argument('--dropout', type=float, default=0,
+    #                     help='dropout probability in transformer model')
 
     parser.add_argument('--dataloader_num_workers', type=int, default=2,
                         help='number of workers for dataloader')
@@ -121,10 +115,8 @@ def main():
                         help='minimum learning rate as a ratio of peak learning rate')
     parser.add_argument('--use_llm_emb', action='store_true',
                         help = "set to True if you don't want to initialize new embeddings in the Text Encoder")
-    parser.add_argument('--use_bos_from_lm', action='store_true',
-                        help = "set to True if you want to use lm.config.bos_token. If Lm doesn't have it, specify bos_token argument (default is eos token)")
-    parser.add_argument('--bos_token', type=str, default=None, 
-                        help="bos_token for lm, if None takes eos token from tokenizer")
+    # parser.add_argument('--bos_token', type=str, default=None, 
+    #                     help="bos_token for lm, if None takes eos token from tokenizer")
     parser.add_argument('--weight_decay', type=float, default=0,
                         help='weight decay')
     parser.add_argument('--max_grad_value', type=float, default=5.0,
@@ -139,14 +131,12 @@ def main():
     parser.add_argument('--log_dir', type=str, default=None,
                         help='log runs dir')
 
-    parser.add_argument('--lm_dir', type=str, default=None,
-                        help='lm dir')
     parser.add_argument('--datasets_config', type=str, default=None,
                         help='datasets yaml file path')
-    parser.add_argument('--encoder_model_name', type=str, default='microsoft/wavlm-large',
-                        help='encoder model name')
-    parser.add_argument('--lm_model_name', type=str, default="allenai/OLMo-1B-hf",
-                        help='lm name as string')
+    # parser.add_argument('--encoder_model_name', type=str, default='microsoft/wavlm-large',
+    #                     help='encoder model name')
+    # parser.add_argument('--lm_model_name', type=str, default="allenai/OLMo-1B-hf",
+    #                     help='lm name as string')
 
     parser.add_argument('--pretrained_dir', type=str, default=None,
                         help='pretrained connector and encoder dir: takes models from this dir')
@@ -163,7 +153,7 @@ def main():
     parser.add_argument('--mse_loss', action='store_true',
                         help='only use in case asr text is true and text input is true, this will use mse loss between hidden states of text encoder and connector')
     parser.add_argument('--last_layer_mse', action='store_true',
-                        help='only use in case asr text is true, text input is true, and mse loss is true, this will use mse loss between last layer hidden states of text encoder and connector')
+                        help='only use in case asr text is true, text inpèut is true, and mse loss is true, this will use mse loss between last layer hidden states of text encoder and connector')
     parser.add_argument('--encoder_eval', action='store_true',
                         help='eval mode for encoder during training, if False train mode')
     parser.add_argument('--connector_eval', action='store_true',
@@ -177,25 +167,33 @@ def main():
                         help='weight for text encoder loss')
     parser.add_argument('--mse_weight', type=float, default=0.125,
                         help='weight for Mse loss')
-    parser.add_argument('--mask_rate', type=float, default=0.5,
-                        help='mask rate for text encoder')
-    parser.add_argument('--text_encoder_dim', type=int, default=512,
-                        help='text encoder dimension')
-    parser.add_argument('--connector_layers', type = int, default = 2,
-                        help = 'number of connector layers')
-    parser.add_argument('--text_encoder_layers', type = int, default = 2,
-                        help = 'number of text encoder layers')
-    parser.add_argument('--lora_rank', type=int,
-                        help='rank of LoRA layers in connector model')
+    # parser.add_argument('--mask_rate', type=float, default=0.5,
+    #                     help='mask rate for text encoder')
+    # parser.add_argument('--text_encoder_dim', type=int, default=512,
+    #                     help='text encoder dimension')
+    # parser.add_argument('--connector_layers', type = int, default = 2,
+    #                     help = 'number of connector layers')
+    # parser.add_argument('--text_encoder_layers', type = int, default = 2,
+    #                     help = 'number of text encoder layers')
+    # parser.add_argument('--lora_rank', type=int,
+    #                     help='rank of LoRA layers in connector model')
     parser.add_argument('--dataset_for_choosing_checkpoint',
                         help='validation dataset fo choosing the best checkpoint.'
                         'If unspecified, defaults to the validation dataset in the yaml')
     parser.add_argument('--mse_loss_logit', action='store_true', help = 'trai with mse loss calculated on logits')
     parser.add_argument('--no_text_encoder', action='store_true', default=False, help='do not use Text encoder')
-    parser.add_argument('--quantization_level', type=str, default='none',
-                        choices=['none', '4bit', '8bit'],
-                        help='Quantization level to use for the language model. Default is no quantization.')
+    # parser.add_argument('--quantization_level', type=str, default='none',
+    #                     choices=['none', '4bit', '8bit'],
+    #                     help='Quantization level to use for the language model. Default is no quantization.')
 
+    parser.add_argument('--model_config', type=str, help='path to config file with model components and their parameters')
+    parser.add_argument('--ontology_config', type=str, help='path to config file with ontology parameters')
+
+    parser.add_argument('--augment', action='store_true', default=False, help='use data augmentation for audio input, settings in augment.yaml')
+    parser.add_argument('--use_ontology', action='store_true', default=False, help='use ontology information for training')
+    parser.add_argument('--use_kv_cache', action='store_true', default=False, help='use kv cache, swap context and audio for faster inference')
+    parser.add_argument('--normalize_trans', action='store_true', help='normalize to literal numbers transcripts and context')
+            
     
     args = parser.parse_args()
     torch.set_float32_matmul_precision('high')
@@ -220,119 +218,16 @@ def main():
     for arg in vars(args):
         accelerator.print(f'{arg}: {getattr(args, arg)}')
         input_args[f'{arg}'] = f'{getattr(args, arg)}'
-    lm_model_name = args.lm_model_name
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=args.quantization_level == '4bit',
-        load_in_8bit= args.quantization_level == '8bit',
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type='nf4',
-    )
-    quantization_kwargs = {}
-    if args.quantization_level != 'none':
-        quantization_kwargs = {'quantization_config': bnb_config}
-
-    if "flash_attn" in sys.modules:
-        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs, attn_implementation='flash_attention_2')
-    else:
-        lm = transformers.AutoModelForCausalLM.from_pretrained(lm_model_name, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map=accelerator.device, **quantization_kwargs)
-    
-    if hasattr(lm, "language_model"):
-        lm = lm.language_model
-    
-    if args.lora_rank is not None:
-        lora_config = LoraConfig(
-            task_type='CAUSAL_LM',
-            target_modules='all-linear',
-            r=args.lora_rank,
-            lora_alpha=args.lora_rank,
-        )
-        if args.resume:
-            accelerator.print('Loading LoRA config from checkpoint')
-            lm = PeftModel.from_pretrained(lm, os.path.join(args.output_dir, 'latest', 'lm'),
-            is_trainable=True)
-        elif args.pretrained_dir is not None and os.path.isfile(os.path.join(args.pretrained_dir, 'lm', 'adapter_config.json')):
-            accelerator.print(f'Loading LoRA config from {args.pretrained_dir}')
-            lm = PeftModel.from_pretrained(lm, os.path.join(args.pretrained_dir,'lm'), is_trainable=True) 
-        else:
-            accelerator.print(sum([_p.numel() for _p in lm.parameters() if _p.requires_grad]))
-            lm = get_peft_model(lm, lora_config)
-
-            accelerator.print(sum([_p.numel() for _p in lm.parameters() if _p.requires_grad]))
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.lm_model_name, trust_remote_code=True)
-    if hasattr(tokenizer, "bos_token_id") and tokenizer.bos_token_id is not None:  # args.use_bos_from_lm:
-        bos_token = lm.config.bos_token_id
-    else:
-        if args.bos_token is None:
-            bos_token = lm.config.eos_token_id
-        else:
-            bos_token = tokenizer.encode(args.bos_token)[0]
-    
-    lm_config = {"model_name": lm_model_name,
-                "use_bos_from_lm" : args.use_bos_from_lm,
-                "bos_token": bos_token}
-    accelerator.print("lm_config", lm_config)
-    lm_hidden_size = lm.config.hidden_size
-
-    best_slot_k_f1 = 0
-    all_metrics = []
-
-    if args.pretrained_dir is not None:
-        accelerator.print(f'Loading pretrained connector and encoder from {args.pretrained_dir}')
-        connector = models.Connector.load_from_dir(args.pretrained_dir, device)
-        connector = connector.to(device)
-        encoder = models.WavLMWrapper.load_from_dir(args.pretrained_dir, device, deactivate_masked_spec_embed = True)
-        
-        if os.path.isfile(os.path.join(args.pretrained_dir, 'TextEncoder_model.pt')):
-                accelerator.print(f'Loading pretrained text encoder from {args.pretrained_dir}')
-                text_encoder = models.TextEncoder.load_from_dir(args.pretrained_dir, device)
-        else:
-            text_encoder = models.TextEncoder(args.mask_rate, vocab_size=None, dim_input = args.text_encoder_dim, dim_output = encoder.encoder.config.hidden_size, num_heads=4, ff_size = 4*(args.text_encoder_dim), pad_token=tokenizer.pad_token_id, dim_lm_embeddings=lm_hidden_size, num_layers = args.text_encoder_layers)
-    else:
-        print("initialize model parts")
-        encoder = models.WavLMWrapper(args.encoder_model_name)
-        connector = models.Connector(encoder.encoder.config.hidden_size, lm_hidden_size, num_heads = 4, ff_size = 4*encoder.encoder.config.hidden_size, num_connector_layers = args.connector_layers)
-    
-        if args.text_input:
-            if args.use_llm_emb:
-                text_encoder = models.TextEncoder(args.mask_rate, vocab_size=None, dim_input = args.text_encoder_dim, dim_output = encoder.encoder.config.hidden_size, num_heads=4, ff_size = 4*(args.text_encoder_dim), pad_token=tokenizer.pad_token_id, dim_lm_embeddings=lm_hidden_size, num_layers = args.text_encoder_layers)
-            else:
-                text_encoder = models.TextEncoder(args.mask_rate, tokenizer.vocab_size, args.text_encoder_dim, encoder.encoder.config.hidden_size, num_heads=4, ff_size = 4*(args.text_encoder_dim), pad_token=tokenizer.pad_token_id, num_layers = args.text_encoder_layers)
-            
-    if args.resume:
-        accelerator.print('Resuming from checkpoint')
-        connector = models.Connector.load_from_dir(os.path.join(args.output_dir, 'latest'), device)
-        connector = connector.to(device)
-        if args.text_input:
-            text_encoder = models.TextEncoder.load_from_dir(os.path.join(args.output_dir, 'latest'), device)
-            text_encoder = text_encoder.to(device)
-        if args.train_encoder:
-            encoder = models.WavLMWrapper.load_from_dir(os.path.join(args.output_dir, 'latest'), device, deactivate_masked_spec_embed = True)
-            encoder = encoder.to(device)
-       
-        if os.path.isfile(os.path.join(args.output_dir, 'lm_config.yaml')):
-            with open(os.path.join(args.output_dir, 'lm_config.yaml'), 'r') as f:
-                lm_config = yaml.load(f, Loader=yaml.FullLoader)
-            lm_model_name = lm_config['model_name']
-            bos_token = lm_config['bos_token']
-        
-        with open(os.path.join(args.output_dir, 'latest', 'metrics.yaml'), 'r') as f:
-            all_metrics = yaml.safe_load(f)
-        best_slot_k_f1 = max([m['slot_k_f1'] for m in all_metrics])
-
-    
-    if args.no_text_encoder:
-        text_encoder = None        
-    if args.text_input:
-        model = models.EncoderConnectorLmWithPretrainedLm(encoder, connector, lm, tokenizer, text_encoder)
-    else:
-        model = models.EncoderConnectorLmWithPretrainedLm(encoder, connector, lm, tokenizer)
-    model = model.to(device)
-    
+    model_config = yaml.load(open(args.model_config), Loader=yaml.FullLoader)
+    model, tokenizer, lora_config, lm_config, best_slot_k_f1, all_metrics = build_model.main(
+        model_config, args.pretrained_dir, args.output_dir, resume=args.resume, device=device,
+        text_input=(args.text_input and not args.no_text_encoder))
+    bos_token = lm_config.get('bos_token')
+    lora_rank = model_config.get('lora_rank')
     if not args.train_encoder:
         model.freeze_encoder()
-    if not args.train_lm and args.lora_rank is None:
+    if not args.train_lm and lora_rank is None:
         model.freeze_lm()
 
     parameters_to_train = [{"params": model.connector.parameters(), "lr": args.peak_connector_lr, "weight_decay": args.weight_decay}]
@@ -342,7 +237,7 @@ def main():
         parameters_to_train += [{"params": model.text_encoder.parameters(), "lr": args.peak_text_encoder_lr,"weight_decay": args.weight_decay}]
     if args.train_lm:
         parameters_to_train += [{"params": model.lm.parameters(),"lr": args.peak_lm_lr,"weight_decay": args.weight_decay}]
-    if args.lora_rank is not None:
+    if lora_rank is not None:
         parameters_to_train += [{"params": [p for p in model.lm.parameters() if p.requires_grad], "lr": args.peak_lr,"weight_decay": args.weight_decay}]
 
     accelerator.print(model.config)
@@ -378,13 +273,26 @@ def main():
     dset_valid = data.load_from_config('validation', datasets_config, hf_dataset_path, tokenizer,
                                             accelerator=accelerator, do_filter=True) # dictonary ["commonvoice": ..., "librispeech": ... etc]
 
-    train_asr_data = data.DialogDatasetHF(dset_train_s, tokenizer, bos_token)
+    if args.use_ontology:
+        train_asr_ontology = data.build_ontology(dset_train_s, args.ontology_config)
+    else:
+        train_asr_ontology = None
+    train_asr_data = data.DialogDatasetHF(dset_train_s, tokenizer, bos_token, ontology=train_asr_ontology)
+    
     if args.text_input:
-        train_text_data = data.TextDialogDatasetHF(dset_train_t, tokenizer, bos_token)
+        if args.use_ontology:
+            train_text_ontology = data.build_ontology(dset_train_t,  args.ontology_config)
+        else:
+            train_text_ontology = None
+        train_text_data = data.TextDialogDatasetHF(dset_train_t, tokenizer, bos_token, ontology=train_text_ontology)
         
     val_subsets = {}
     for k, v in dset_valid.items():
-        val_subsets[k] = data.DialogDatasetHF({k:v}, tokenizer, bos_token)
+        if args.use_ontology:
+            val_ontology = data.build_ontology(v,  args.ontology_config)
+        else:
+            val_ontology = None
+        val_subsets[k] = data.DialogDatasetHF({k:v}, tokenizer, bos_token, ontology=val_ontology)
     if args.dataset_for_choosing_checkpoint is None:
         dataset_for_choosing_checkpoint = list(val_subsets.keys())[-1]
     else:
@@ -775,7 +683,7 @@ def main():
                     accelerator.unwrap_model(model).text_encoder.save_to_directory(os.path.join(args.output_dir, 'latest'))
                 if args.train_encoder or args.pretrained_dir is not None:
                     accelerator.unwrap_model(model).encoder.save_to_directory(os.path.join(args.output_dir, 'latest'))
-                if args.lora_rank is not None:
+                if lora_rank is not None:
                     accelerator.unwrap_model(model).lm.save_pretrained(os.path.join(args.output_dir, 'latest', 'lm'))
                 yaml.dump(all_metrics, open(os.path.join(args.output_dir, 'latest', 'metrics.yaml'), 'w'))
                 torch.save(optimizer.state_dict(), os.path.join(args.output_dir, 'latest', 'optimizer.pt'))
@@ -788,10 +696,11 @@ def main():
                         accelerator.unwrap_model(model).text_encoder.save_to_directory(os.path.join(args.output_dir, 'best'))
                     if args.train_encoder or args.pretrained_dir is not None:
                         accelerator.unwrap_model(model).encoder.save_to_directory(os.path.join(args.output_dir, 'best'))
-                    if args.lora_rank is not None:# or args.multi_outputs is not None:
+                    if lora_rank is not None:# or args.multi_outputs is not None:
                         accelerator.unwrap_model(model).lm.save_pretrained(os.path.join(args.output_dir, 'best', 'lm'))
                     yaml.dump(all_metrics, open(os.path.join(args.output_dir, 'best', 'metrics.yaml'), 'w'))
                     yaml.dump(lm_config, open(os.path.join(args.output_dir, 'best', 'lm_config.yaml'), 'w'))
+
             recent_slot_k_f1 = [m['slot_k_f1'] for m in all_metrics[-args.early_stopping_patience:]
                           if m["dataset"] == dataset_for_choosing_checkpoint]
             all_slot_k_f1 = [m['slot_k_f1'] for m in all_metrics if m["dataset"] == dataset_for_choosing_checkpoint]
@@ -802,19 +711,24 @@ def main():
                 accelerator.unwrap_model(model).text_encoder.save_to_directory(os.path.join(args.output_dir, f'checkpoint_{j}'))
             if args.train_encoder or args.pretrained_dir is not None:
                 accelerator.unwrap_model(model).encoder.save_to_directory(os.path.join(args.output_dir, f'checkpoint_{j}'))
-            if args.lora_rank is not None:# or args.multi_outputs is not None:
+            if lora_rank is not None:# or args.multi_outputs is not None:
                 accelerator.unwrap_model(model).lm.save_pretrained(os.path.join(args.output_dir, f'checkpoint_{j}', 'lm'))
+                yaml.dump(lora_config, open(os.path.join(args.output_dir, 'lora_config.yaml'), 'w'))
             yaml.dump(all_metrics, open(os.path.join(args.output_dir, f'checkpoint_{j}', 'metrics.yaml'), 'w'))
             yaml.dump(lm_config, open(os.path.join(args.output_dir, 'lm_config.yaml'), 'w'))
             yaml.dump(datasets_config, open(os.path.join(args.output_dir, 'datasets_config.yaml'), 'w'))
             yaml.dump(input_args, open(os.path.join(args.output_dir, "input_args.yaml"), 'w'))
+            yaml.dump(model_config, open(os.path.join(args.output_dir, "model_config.yaml"), 'w'))
+            if args.use_ontology:
+                shutil.copy(args.ontology_config, os.path.join(args.output_dir, "ontology_config.yaml"))
+                        
             yaml.dump(all_transcriptions, open(os.path.join(args.output_dir, f'checkpoint_{j}', 'transcriptions.yaml'), 'w'))
             yaml.dump(all_references, open(os.path.join(args.output_dir,  f'checkpoint_{j}', 'ref.yaml'), 'w'))
         if accelerator.is_main_process:
             writer.flush()
         
         if j > 0 and j % args.validation_steps == 0:
-            if len(all_slot_k_f1) > args.early_stopping_patience and all(v <= max(all_slot_k_f1) for v in recent_slot_k_f1):
+            if len(all_slot_k_f1) > args.early_stopping_patience and all(v < max(all_slot_k_f1) for v in recent_slot_k_f1):
                 accelerator.print('Early stopping')
                 break
             

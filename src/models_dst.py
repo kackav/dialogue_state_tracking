@@ -14,8 +14,6 @@ try:
 except ImportError:
     flash_attn = None
 
-
-
 class SelfAttention(nn.Module):
     def __init__(self, hidden_size, num_heads, dropout, causal = True
                  ):
@@ -71,6 +69,7 @@ class WavLMWrapper(nn.Module):
         self.encoder = transformers.WavLMModel.from_pretrained(model_name, torch_dtype=torch.bfloat16)
         self.encoder.config.mask_feature_prob = 0.0
         self.encoder.config.mask_time_prob = 0.0
+        self.hidden_size = self.encoder.config.hidden_size
         if hasattr(self.encoder, 'masked_spec_embed') and deactivate_masked_spec_embed:
             self.encoder.masked_spec_embed = None  # Disable masked spec embedding if it exists
         self.strides = [_.conv.stride[0] for _ in self.encoder.feature_extractor.conv_layers]
@@ -109,8 +108,6 @@ class WavLMWrapper(nn.Module):
         if hasattr(model.encoder, 'masked_spec_embed'):
             model.encoder.masked_spec_embed = None
         return model
-
-
 
 class TransformerEncoderBlock(nn.Module):
     def __init__(self, hidden_size, num_heads, ff_size, dropout, causal = True):
