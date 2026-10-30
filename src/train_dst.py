@@ -290,6 +290,7 @@ def main():
     for k, v in dset_valid.items():
         if args.use_ontology:
             val_ontology = data.build_ontology(v,  args.ontology_config)
+            # val_ontology = train_asr_ontology
         else:
             val_ontology = None
         val_subsets[k] = data.DialogDatasetHF({k:v}, tokenizer, bos_token, ontology=val_ontology)

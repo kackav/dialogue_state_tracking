@@ -18,6 +18,7 @@ from tokenizers.decoders import BPEDecoder
 import datasets
 import yaml
 import copy
+import augment_text
 
 def train_bpe(data, vocab_size=1024, special_tokens=None, output_dir='tokenizer', num_sentences=100000):
     if special_tokens is None:
@@ -49,39 +50,55 @@ def load_tokenizer(tokenizer_json):
 def _as_hashable(v):
     return v if isinstance(v, (str, int, float, bool)) else json.dumps(v, sort_keys=True)
 
+def _string_to_int(n_of_samples):
+    if n_of_samples == 'all':
+        int_n_of_samples = float('inf')
+    else:
+        int_n_of_samples = int(n_of_samples)
+    return int_n_of_samples
+
+def _sk(x):
+    return (type(x).__name__, str(x))
+
 def build_ontology(data, ontology_config=None):
     """data: a HF dataset or a dict {name: dataset}. Reads only the 'text' column (no audio decoding)."""
     domains_ontology = set()
     keys_ontology = {}
     values_ontology = {}
-    default_cfg = {"sampling": "fixed", "slot_keys": 5, "slot_values": 10, "domains": 0}
+    default_cfg = {"slot_values": {"n_of_samples":10, "ground_truth":True, "additionals" : 3}, "slot_keys": {"n_of_samples":10, "ground_truth":True, "additionals" : 3},"domains": {"n_of_samples":0, "ground_truth":True, "additionals" : 3},"sampling":"fixed"}
     ontology_config = yaml.load(open(ontology_config, 'r'), Loader=yaml.FullLoader) if ontology_config else default_cfg
-    
+    int_n_of_domains_to_sample = _string_to_int(ontology_config["domains"]["n_of_samples"])
+    int_n_of_keys_to_sample = _string_to_int(ontology_config["slot_keys"]["n_of_samples"])
+    int_n_of_values_to_sample = _string_to_int(ontology_config["slot_values"]["n_of_samples"])
     for ds in (data.values() if isinstance(data, dict) else [data]):
         for raw in ds['text']:
             text_input = json.loads(raw)
-            if "domains" in ontology_config and ontology_config["domains"]["n_of_samples"] > 0:
+            if "domains" in ontology_config and int_n_of_domains_to_sample > 0:
                 domains_ontology.update(ast.literal_eval(text_input["domains"]))
             else:
                 domains_ontology = None
             slot_dict = ast.literal_eval(text_input['slots'])
             for dom, slot_items in slot_dict.items():
                 for slot_key, slot_value in slot_items.items():
-                    if ontology_config["slot_keys"]["n_of_samples"] > 0:
+                    if int_n_of_keys_to_sample > 0:
                         keys_ontology.setdefault(dom, set()).add(slot_key)
-                        # keys_ontology.update(slot_key)
-                    
-                    if ontology_config["slot_values"]["n_of_samples"] > 0:    
+
+                    if int_n_of_values_to_sample > 0:    
                         values_ontology.setdefault(slot_key, set()).add(_as_hashable(slot_value))
                     
     return {'values': values_ontology, 'keys': keys_ontology, 'cfg': ontology_config}
 
+
 def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontology_config, rng=None):
     rng = rng if rng is not None else random
+    slots = slots or {}
     n_of_values_to_sample = ontology_config['slot_values']['n_of_samples'] # if 'slot_values' in ontology_config else 0
-    n_of_keys_to_sample = ontology_config['slot_keys']['n_of_samples']# if 'slot_keys' in ontology_config else 0
-    n_of_domains_to_sample = ontology_config['domains']['n_of_samples'] #if 'domains' in ontology_config else 0
     
+    n_of_keys_to_sample = ontology_config['slot_keys']['n_of_samples']# if 'slot_keys' in ontology_config else 0
+    
+    n_of_domains_to_sample = ontology_config['domains']['n_of_samples'] #if 'domains' in ontology_config else 0
+
+    use_gt_slots = ontology_config['use_gt_slots']
     gt_slot_keys = set()
     gt_domains = set()
     values_for_context = set()
@@ -94,61 +111,63 @@ def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontol
     all_possible_slots = [sorted(slot_ontology[dom]) for dom in sorted(all_possible_domains)]
     all_possible_slots = [x for xs in all_possible_slots for x in xs]
     all_possible_slots = set(all_possible_slots)
+
+    int_n_of_domains_to_sample = _string_to_int(n_of_domains_to_sample)
+    int_n_of_values_to_sample = _string_to_int(n_of_values_to_sample)
+    int_n_of_keys_to_sample = _string_to_int(n_of_keys_to_sample)
+
+       
     for dom, slot_dict in slots.items():
-        
         for slot_key, slot_value in slot_dict.items():
             slot_value = _as_hashable(slot_value)
-            gt_val = {}
+            gt_val = set()
             if val_ontology:
-                vals_subset = all_possible_vals[slot_key] #set!
-                vals_subset.discard(slot_value)
-                if ontology_config['slot_values']['ground_truth']==True:
-                    gt_val = {slot_value}
+                vals_subset = set(all_possible_vals.get(slot_key, ())) - {slot_value}
+                if len(vals_subset) > int_n_of_values_to_sample:
+                    sampled_vals = set()
+                    values_for_context = set()
+                    continue
+                        
+                if ontology_config['slot_values']['ground_truth']==True and int_n_of_values_to_sample>0:
+                    gt_val.update({slot_value})
                     values_for_context.update(gt_val)
-
-                temp_n_of_values_to_sample = n_of_values_to_sample
-                if n_of_values_to_sample < len(gt_val):
-                    temp_n_of_values_to_sample = len(gt_val) + ontology_config['slot_values']['additionals']
-                sampled_vals = set(rng.sample(sorted(vals_subset), min(temp_n_of_values_to_sample-len(gt_val), len(vals_subset))))
+                
+                sampled_vals = set(rng.sample(sorted(vals_subset, key=_sk), max(0, min(int_n_of_values_to_sample-len(gt_val), len(vals_subset)))))
                 values_for_context.update(sampled_vals)
 
-            
-            if ontology_config['slot_keys']['ground_truth']==True:
+            if ontology_config['slot_keys']['ground_truth']==True and int_n_of_keys_to_sample >0:
                 gt_slot_keys.update({slot_key})
-            
-        if ontology_config['domains']['ground_truth']==True:
+
+        if ontology_config['domains']['ground_truth']==True and int_n_of_domains_to_sample >0:
             gt_domains.update({dom})
-    
+
+    if not(use_gt_slots):
+        vals_subset = set([all_possible_vals[_k] for _k in all_possible_vals.keys()])
+        gt_vals = set(slot_dict.values())
+        values_for_context = vals_subset - gt_vals
+        
     if slot_ontology:
-        all_possible_domains.discard(gt_domains)
-        temp_n_of_domains_to_sample = n_of_domains_to_sample
-        if n_of_domains_to_sample < len(gt_domains):
-            temp_n_of_domains_to_sample = len(gt_domains) + ontology_config['domains']['additionals']
-        domains_for_context = set(rng.sample(sorted(all_possible_domains), min(temp_n_of_domains_to_sample-len(gt_domains), len(all_possible_domains))))
-        if ontology_config['domains']['ground_truth']==True:
+        all_possible_domains = all_possible_domains - gt_domains #.discard(gt_domains)
+        
+        domains_for_context = set(rng.sample(sorted(all_possible_domains), max(0, min(int_n_of_domains_to_sample-len(gt_domains), len(all_possible_domains)))))
+        if ontology_config['domains']['ground_truth']==True and int_n_of_domains_to_sample > 0:
             domains_for_context.update(gt_domains)
-        slots_subset = copy.deepcopy(all_possible_slots)
-        [slots_subset.discard(gt) for gt in gt_slot_keys]
-        temp_n_of_keys_to_sample = n_of_keys_to_sample
-        if n_of_keys_to_sample < len(gt_slot_keys):
-            temp_n_of_keys_to_sample = len(gt_slot_keys) + ontology_config['slot_keys']['additionals']
-        slots_for_context = set(rng.sample(sorted(slots_subset), min(temp_n_of_keys_to_sample-len(gt_slot_keys), len(slots_subset))))
-        # print(len(slots_subset), len(gt_slot_keys), gt_slot_keys, slot_dict, gt_domains, sampled_vals)      
-        # try:
-        #     slots_for_context = set(rng.sample(sorted(slots_subset), min(n_of_keys_to_sample-len(gt_slot_keys), len(slots_subset))))
-        # except ValueError:
-        #     print(len(slots_subset), len(gt_slot_keys), gt_slot_keys, slots_subset)
-        if ontology_config['slot_keys']['ground_truth']==True:
+        slots_subset = all_possible_slots  - gt_slot_keys
+        slots_for_context = set(rng.sample(sorted(slots_subset), max(0, min(int_n_of_keys_to_sample-len(gt_slot_keys), len(slots_subset)))))
+        if ontology_config['slot_keys']['ground_truth']==True and int_n_of_keys_to_sample > 0:
             slots_for_context.update(gt_slot_keys)
     else:
         slots_for_context = set()
         domains_for_context = set()
 
-    values_for_context = sorted(values_for_context)
+    values_for_context = sorted(values_for_context, key=_sk) #sorted(values_for_context)
     slots_for_context = sorted(slots_for_context)
     domains_for_context = sorted(domains_for_context)
+    str_dom = str(domains_for_context)+', ' if len(domains_for_context)>0 else ''
+    str_ctx = str(slots_for_context)+', ' if len(slots_for_context)>0 else ''
+    str_vals = str(values_for_context)+', ' if len(values_for_context)>0 else ''
 
-    return f"{domains_for_context if len(domains_for_context)>0 else ''}, f{slots_for_context if len(slots_for_context)>0 else ''}, {values_for_context if len(values_for_context)>0 else ''}, {context}"
+    return f"{str_dom}{str_ctx}{str_vals}{context}"
 
 class TextDataset(torch.utils.data.Dataset):
     def __init__(self, data, tokenizer, bos_token):
@@ -404,7 +423,7 @@ class InferenceDialogDatasetHF(torch.utils.data.Dataset):
 
 
 class TextDialogDatasetHF(torch.utils.data.Dataset):
-    def __init__(self, data, tokenizer, bos_token, ontology=None):
+    def __init__(self, data, tokenizer, bos_token, ontology=None, augment_config = None):
         self.data = data
         self.is_fake = False
         self.data_lengths = {key: len(v) for key,v in data.items()}
@@ -416,6 +435,13 @@ class TextDialogDatasetHF(torch.utils.data.Dataset):
             self.use_ontology = True
             self.val_ontology = ontology['values']
             self.slot_ontology = ontology['keys']
+        
+        if augment_config:
+            default_cfg = {"names": True, "numbers": True, "categorical": False}
+            augment_config = yaml.load(open(augment_config, 'r'), Loader=yaml.FullLoader) if os.path.isfile(augment_config) else default_cfg
+            self.Augment = augment_text(augment_config, ontology)
+            self.augment_func = self.Augment.augment_turn
+
             # self.dom_ontology = ontology['domains']
         else:
             self.use_ontology=False

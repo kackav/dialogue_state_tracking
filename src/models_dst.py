@@ -370,6 +370,9 @@ class EncoderConnectorLmWithPretrainedLm(nn.Module):
                 print(x['input_ids'].shape)
                 print(x['input_len'])
                 print(x['context_len'])
+                print(x['context_trans'])
+                print(x['text_trans'])
+                                
             if not is_text:
                 x = self.encoder(x)
                 if self.printing:
