@@ -98,7 +98,7 @@ def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontol
     
     n_of_domains_to_sample = ontology_config['domains']['n_of_samples'] #if 'domains' in ontology_config else 0
 
-    use_gt_slots = ontology_config['use_gt_slots']
+    use_gt_slots = ontology_config.get('use_gt_slots', False)
     gt_slot_keys = set()
     gt_domains = set()
     values_for_context = set()
@@ -116,22 +116,21 @@ def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontol
     int_n_of_values_to_sample = _string_to_int(n_of_values_to_sample)
     int_n_of_keys_to_sample = _string_to_int(n_of_keys_to_sample)
 
-       
+    gt_val = set() 
     for dom, slot_dict in slots.items():
         for slot_key, slot_value in slot_dict.items():
             slot_value = _as_hashable(slot_value)
             gt_val = set()
             if val_ontology:
                 vals_subset = set(all_possible_vals.get(slot_key, ())) - {slot_value}
+                if ontology_config['slot_values']['ground_truth']==True and int_n_of_values_to_sample>0:
+                    gt_val.update({slot_value})
+                    values_for_context.update(gt_val)
                 if len(vals_subset) > int_n_of_values_to_sample:
                     sampled_vals = set()
                     values_for_context = set()
                     continue
                         
-                if ontology_config['slot_values']['ground_truth']==True and int_n_of_values_to_sample>0:
-                    gt_val.update({slot_value})
-                    values_for_context.update(gt_val)
-                
                 sampled_vals = set(rng.sample(sorted(vals_subset, key=_sk), max(0, min(int_n_of_values_to_sample-len(gt_val), len(vals_subset)))))
                 values_for_context.update(sampled_vals)
 
@@ -142,9 +141,14 @@ def get_context_with_ontology(context, slots, val_ontology, slot_ontology, ontol
             gt_domains.update({dom})
 
     if not(use_gt_slots):
-        vals_subset = set([all_possible_vals[_k] for _k in all_possible_vals.keys()])
-        gt_vals = set(slot_dict.values())
-        values_for_context = vals_subset - gt_vals
+
+        vals_subset =vals_subset = {
+        val 
+        for k, vals in all_possible_vals.items() 
+        if len(vals) < int_n_of_values_to_sample 
+        for val in vals
+    }
+        values_for_context = vals_subset - gt_val
         
     if slot_ontology:
         all_possible_domains = all_possible_domains - gt_domains #.discard(gt_domains)

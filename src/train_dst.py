@@ -188,7 +188,8 @@ def main():
 
     parser.add_argument('--model_config', type=str, help='path to config file with model components and their parameters')
     parser.add_argument('--ontology_config', type=str, help='path to config file with ontology parameters')
-
+    parser.add_argument('--augment_config', type=str, help='path to config file with augmentation parameters')
+    
     parser.add_argument('--augment', action='store_true', default=False, help='use data augmentation for audio input, settings in augment.yaml')
     parser.add_argument('--use_ontology', action='store_true', default=False, help='use ontology information for training')
     parser.add_argument('--use_kv_cache', action='store_true', default=False, help='use kv cache, swap context and audio for faster inference')
@@ -722,7 +723,8 @@ def main():
             yaml.dump(model_config, open(os.path.join(args.output_dir, "model_config.yaml"), 'w'))
             if args.use_ontology:
                 shutil.copy(args.ontology_config, os.path.join(args.output_dir, "ontology_config.yaml"))
-                        
+            if args.augment:
+                shutil.copy(args.augment_config, os.path.join(args.output_dir, "augment_config.yaml"))
             yaml.dump(all_transcriptions, open(os.path.join(args.output_dir, f'checkpoint_{j}', 'transcriptions.yaml'), 'w'))
             yaml.dump(all_references, open(os.path.join(args.output_dir,  f'checkpoint_{j}', 'ref.yaml'), 'w'))
         if accelerator.is_main_process:
